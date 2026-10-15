@@ -554,6 +554,11 @@ pub struct TrackItem {
     /// of animating through the hold.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hold_filters: bool,
+    /// Speed/Duration ▸ Maintain Audio Pitch: a speed-changed clip's sound is pitch-corrected back
+    /// to its original pitch (the duration still follows the speed). Off by default, as in Premiere.
+    /// Schema v16.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maintain_pitch: bool,
     /// Video Options ▸ Field Options… (stored; FilmCraft renders progressive frames).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_options: Option<FieldOptions>,
@@ -1624,6 +1629,7 @@ impl Project {
             multicam,
             time_interpolation: TimeInterpolation::default(),
             hold_filters: false,
+            maintain_pitch: false,
             field_options: None,
             source_channels,
             audio_stream: 0,

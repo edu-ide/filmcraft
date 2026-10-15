@@ -1799,12 +1799,14 @@ fn build() -> Vec<CommandSpec> {
             "Speed/Duration…",
             ["Clip"],
             Some("Cmd+R"),
-            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
+            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"maintainPitch":bool?,"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
             has_selection,
             |s, p| {
                 let speed = f64_p(p, "speed").unwrap_or(100.0) / 100.0;
                 let reverse = bool_p(p, "reverse").unwrap_or(false);
                 let ripple = bool_p(p, "ripple").unwrap_or(false);
+                // Maintain Audio Pitch: absent leaves each clip's setting as it is
+                let maintain_pitch = bool_p(p, "maintainPitch");
                 let interp = match str_p(p, "interpolation") {
                     Some(m) => Some(filmcraft_project::TimeInterpolation::from_name(m).ok_or_else(|| bad("clip.speedDuration", "unknown interpolation"))?),
                     None => None,
@@ -1838,6 +1840,9 @@ fn build() -> Vec<CommandSpec> {
                     for c in &sel {
                         if let (Some(m), Some((_, it))) = (interp, q.find_item_mut(*c)) {
                             it.time_interpolation = m;
+                        }
+                        if let (Some(m), Some((_, it))) = (maintain_pitch, q.find_item_mut(*c)) {
+                            it.maintain_pitch = m;
                         }
                     }
                     Ok(())

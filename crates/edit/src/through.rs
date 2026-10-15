@@ -182,6 +182,7 @@ mod tests {
             multicam: None,
             time_interpolation: Default::default(),
             hold_filters: false,
+            maintain_pitch: false,
             field_options: None,
             source_channels: Vec::new(),
             audio_stream: 0,
