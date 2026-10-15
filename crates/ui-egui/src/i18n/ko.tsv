@@ -2593,6 +2593,7 @@
 	Ripple Delete Head Frame	앞 프레임 리플 삭제
 	Ripple Edit Tool	리플 편집 도구
 	Ripple Edit, Shifting Trailing Clips	리플 편집, 뒤 클립 이동
+	Maintain Audio Pitch	오디오 피치 유지
 	Ripple Sequence Markers	시퀀스 마커 리플
 	Ripple trim adds edits to keep both sides of trim in sync	리플 트림 시 편집점을 추가해 양쪽 동기화 유지
 	Ripple Trim In	시작 리플 트림
