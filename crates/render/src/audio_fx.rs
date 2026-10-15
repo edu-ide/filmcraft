@@ -6,11 +6,17 @@
 //! continue their chain; any other request starts a fresh chain with enough pre-roll for the
 //! chain's tails to build up. Latency (limiter look-ahead, STFT effects) is compensated by feeding
 //! the chain ahead of its output.
+//!
+//! Speed/Duration ▸ Maintain Audio Pitch runs through the same chains: the varispeed sound is
+//! pitch-shifted back by `-12·log2(speed)` semitones ([`pitch_correction`]) with the phase-vocoder
+//! [`PitchShifter`] before the clip's own effects, so the duration follows the speed and the pitch
+//! stays where it was.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use filmcraft_audio_dsp::AudioEffect;
+use filmcraft_audio_dsp::effects::PitchShifter;
 use filmcraft_project::{EffectInstance, TrackItem};
 use filmcraft_time::Tick;
 
@@ -298,12 +304,55 @@ fn active(item: &TrackItem) -> Vec<(&EffectInstance, Mapping)> {
     item.effects.iter().filter(|e| e.enabled && !e.def().is_some_and(|d| d.intrinsic)).filter_map(|e| mapping(&e.effect).map(|m| (e, m))).collect()
 }
 
-/// Whether the item has audio effects that change its signal.
+/// Whether the item has audio effects that change its signal (its own effects, or the pitch
+/// correction of Maintain Audio Pitch).
 pub fn has_effects(item: &TrackItem) -> bool {
-    !active(item).is_empty()
+    !active(item).is_empty() || pitch_correction(item).is_some()
+}
+
+/// One [`PitchShifter`] covers ±12 semitones; this many in a row cover 1/16× to 16× speed. Faster or
+/// slower clips are corrected by this much and keep the rest of their pitch change.
+const MAX_PITCH_STAGES: usize = 4;
+/// Pre-roll (seconds) for the pitch correction of a fresh chain, as for the Pitch Shifter effect.
+const PITCH_PREROLL: f64 = 0.1;
+
+/// Speed/Duration ▸ Maintain Audio Pitch: the semitones that bring the clip's varispeed sound back
+/// to its original pitch (`-12·log2(speed)`, limited to what [`MAX_PITCH_STAGES`] shifters reach),
+/// or `None` when the clip plays at normal speed, keeps its varispeed pitch, or is remixed (a
+/// remix plays its own segments at normal speed).
+pub fn pitch_correction(item: &TrackItem) -> Option<f32> {
+    if !item.maintain_pitch || crate::remix::is_remixed(item) {
+        return None;
+    }
+    // the same speed the varispeed reader uses
+    let speed = item.speed.abs().max(1e-6);
+    if !speed.is_finite() || (speed - 1.0).abs() < 1e-9 {
+        return None;
+    }
+    let limit = 12.0 * MAX_PITCH_STAGES as f64;
+    let st = (-12.0 * speed.log2()).clamp(-limit, limit);
+    (st.is_finite() && st.abs() > 1e-4).then_some(st as f32)
+}
+
+/// Pitch shifters in a row that together shift by `semitones` (each within its ±12).
+fn pitch_stages(semitones: f32, sr: u32, width: usize) -> Vec<PitchShifter> {
+    let mut stages = Vec::new();
+    let mut remaining = semitones;
+    while remaining.abs() > 1e-4 && stages.len() < MAX_PITCH_STAGES {
+        let shift = remaining.clamp(-12.0, 12.0);
+        let mut stage = PitchShifter::new(sr as f32, width);
+        stage.set_param("semitones", shift);
+        // start at the target ratio instead of gliding to it
+        stage.reset();
+        stages.push(stage);
+        remaining -= shift;
+    }
+    stages
 }
 
 struct Chain {
+    /// Maintain Audio Pitch correction, ahead of the clip effects.
+    pitch: Vec<PitchShifter>,
     fx: Vec<Box<dyn AudioEffect>>,
     latency: usize,
     /// Next timeline sample this chain will output.
@@ -324,6 +373,7 @@ fn structure_hash(item: &TrackItem) -> u64 {
         e.effect.hash(&mut h);
         m.dsp.hash(&mut h);
     }
+    pitch_correction(item).map(f32::to_bits).hash(&mut h);
     h.finish()
 }
 
@@ -344,6 +394,9 @@ fn run(chain: &mut Chain, item: &TrackItem, in0: i64, input: &mut [Vec<f32>], sr
             (m.apply)(d.as_mut(), e, mt);
         }
         let mut chans: Vec<&mut [f32]> = input.iter_mut().map(|c| &mut c[i..end]).collect();
+        for d in chain.pitch.iter_mut() {
+            d.process(&mut chans);
+        }
         for d in chain.fx.iter_mut() {
             d.process(&mut chans);
         }
@@ -369,7 +422,8 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
         None => {
             let act = active(item);
             let mt = item.source_time_at(Tick::from_units(a0, sr as i64));
-            let pre_s = act.iter().map(|(e, m)| (m.preroll)(e, mt)).fold(0.0, f64::max);
+            let correction = pitch_correction(item);
+            let pre_s = act.iter().map(|(e, m)| (m.preroll)(e, mt)).fold(if correction.is_some() { PITCH_PREROLL } else { 0.0 }, f64::max);
             let pre = (pre_s * sr as f64).ceil() as usize;
             let mut fx: Vec<Box<dyn AudioEffect>> = Vec::new();
             for (_, m) in &act {
@@ -377,8 +431,9 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
                     fx.push(d);
                 }
             }
-            let latency = fx.iter().map(|d| d.latency()).sum::<usize>();
-            let chain = Chain { fx, latency, next_out: a0 - pre as i64 };
+            let pitch = correction.map_or_else(Vec::new, |st| pitch_stages(st, sr, width));
+            let latency = pitch.iter().map(|d| d.latency()).chain(fx.iter().map(|d| d.latency())).sum::<usize>();
+            let chain = Chain { pitch, fx, latency, next_out: a0 - pre as i64 };
             let x0 = a0 - pre as i64;
             (chain, read(x0 + latency as i64, pre + n), pre)
         }
