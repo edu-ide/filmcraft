@@ -1,4 +1,4 @@
-//! Chinese fallback fonts for document text in the interface, independent of UI language.
+//! Chinese and Korean fallback fonts for document text in the interface, independent of UI language.
 //! Optional craft-fonts are preferred; native builds without them reuse one installed face.
 
 use std::sync::{Arc, OnceLock};
@@ -35,7 +35,10 @@ fn system_font() -> Option<Arc<FontData>> {
 
 fn korean_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
-    FONT.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
+    FONT.get_or_init(|| {
+        find_registered_font(KOREAN_SAMPLE, KOREAN_PREFERRED, filmcraft_text::fonts::CRAFT_ORIGIN).or_else(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED))
+    })
+    .clone()
 }
 
 /// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
@@ -45,7 +48,11 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
         return None;
     }
     filmcraft_text::fonts::scan_system();
-    let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
+    find_registered_font(sample, preferred, "system")
+}
+
+fn find_registered_font(sample: &str, preferred: &[&str], origin: &str) -> Option<Arc<FontData>> {
+    let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == origin && !f.info.italic).collect();
     let covers = |f: &filmcraft_text::fonts::Face| f.covers_text(sample);
     let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
     let found = preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
@@ -53,7 +60,7 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
     Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
 }
 
-/// Whether [`install`] has a Hangul face to add (an installed system face; none is bundled).
+/// Whether [`install`] has a Hangul face to add (optional craft-fonts, or an installed system face).
 /// The Korean interface needs one.
 pub(crate) fn korean_available() -> bool {
     korean_font().is_some()
@@ -71,9 +78,9 @@ pub(crate) fn available() -> bool {
 pub(crate) fn install(fonts: &mut FontDefinitions) {
     install_chinese(fonts);
     if let Some(font) = korean_font() {
-        fonts.font_data.insert("system-korean".into(), font);
+        fonts.font_data.insert("fallback-korean".into(), font);
         for stack in fonts.families.values_mut() {
-            stack.push("system-korean".into());
+            stack.push("fallback-korean".into());
         }
     }
 }

@@ -7,8 +7,9 @@
 //! empty and nothing else changes. A `CRAFT_FONTS_DIR` that is not a checkout is a warning, or an
 //! error with `CRAFT_FONTS_REQUIRED=1` (release builds).
 //!
-//! Native builds embed every font. The web (wasm32) build embeds only the UI font (BIZ UDPGothic
-//! Regular, ~4.5 MB) to stay under the web size budget (Cloudflare serves files up to 25 MiB).
+//! Native builds embed every font. The web (wasm32) build embeds the UI font (BIZ UDPGothic
+//! Regular) and Regular Hangul faces, since wasm cannot discover an installed Korean font.
+//! Keep the optional input small enough for the web size budget (25 MiB per file).
 //! Only the local directory is read: no network.
 
 use std::fmt::Write as _;
@@ -47,7 +48,7 @@ fn craft_fonts(dir: &std::path::Path) -> Result<String, String> {
         let [family, style, file, scripts, ..] = f.as_slice() else {
             return Err(format!("malformed manifest line: {line}"));
         };
-        if wasm && !(*family == "BIZ UDPGothic" && *style == "Regular") {
+        if wasm && !web_font(family, style, scripts) {
             continue;
         }
         let path = dir.join(file).canonicalize().map_err(|e| format!("{file}: {e}"))?;
@@ -61,4 +62,28 @@ fn craft_fonts(dir: &std::path::Path) -> Result<String, String> {
         );
     }
     Ok(out)
+}
+
+fn web_font(family: &str, style: &str, scripts: &str) -> bool {
+    style == "Regular" && (family == "BIZ UDPGothic" || scripts.split(',').map(str::trim).any(|s| matches!(s, "Hang" | "Kore")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::web_font;
+
+    #[test]
+    fn web_keeps_japanese_ui_and_korean_regular_faces() {
+        assert!(web_font("BIZ UDPGothic", "Regular", "Jpan"));
+        assert!(web_font("Noto Sans CJK KR", "Regular", "Hang, Latn"));
+        assert!(web_font("Noto Sans KR", "Regular", "Kore"));
+    }
+
+    #[test]
+    fn web_does_not_embed_every_cjk_weight_or_family() {
+        assert!(!web_font("Noto Sans CJK KR", "Bold", "Hang"));
+        assert!(!web_font("BIZ UDPGothic", "Bold", "Jpan"));
+        assert!(!web_font("Noto Sans CJK SC", "Regular", "Hans"));
+        assert!(!web_font("Unrelated", "Regular", "Hangul"));
+    }
 }

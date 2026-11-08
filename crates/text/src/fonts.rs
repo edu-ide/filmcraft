@@ -365,6 +365,12 @@ pub fn all_faces() -> Vec<Arc<Face>> {
     db().read().unwrap_or_else(|e| e.into_inner()).faces.clone()
 }
 
+/// Revision for font-dependent caches. Faces are append-only, so their count changes whenever
+/// any registration path adds a face, without invalidating existing face ids.
+pub(crate) fn revision() -> usize {
+    db().read().unwrap_or_else(|e| e.into_inner()).faces.len()
+}
+
 /// Families with their style names, sorted by family; styles in weight order.
 pub fn families() -> Vec<(String, Vec<String>)> {
     let mut m: std::collections::BTreeMap<String, Vec<(bool, u16, String)>> = Default::default();
@@ -543,9 +549,15 @@ mod tests {
     /// requested face lacks: Gothic for sans text, Mincho for serif text.
     #[test]
     fn japanese_falls_back_to_craft_fonts() {
-        let craft: Vec<_> = all_faces().into_iter().filter(|f| f.info.origin == CRAFT_ORIGIN).collect();
+        let japanese: Vec<_> = craft_japanese().flat_map(|f| read_faces_bytes(f.bytes)).collect();
+        let craft: Vec<_> = all_faces()
+            .into_iter()
+            .filter(|f| {
+                f.info.origin == CRAFT_ORIGIN && japanese.iter().any(|n| n.family == f.info.family && n.style == f.info.style && n.index == f.info.index)
+            })
+            .collect();
         if craft_japanese().next().is_none() {
-            eprintln!("SKIPPED: built without craft-fonts (set CRAFT_FONTS_DIR to run)");
+            eprintln!("SKIPPED: built without Japanese craft-fonts (set CRAFT_FONTS_DIR to run)");
             assert!(craft.is_empty());
             return;
         }
@@ -568,6 +580,24 @@ mod tests {
         let l = crate::layout("日本語の文字", &crate::TextStyle { size: 40.0, ..Default::default() }, &Default::default());
         assert_eq!(l.glyphs.len(), 6);
         assert!(l.glyphs.iter().all(|g| g.id != 0), "{:?}", l.glyphs);
+    }
+
+    #[test]
+    fn korean_falls_back_to_craft_fonts() {
+        if !CRAFT_FONTS.iter().any(|f| f.scripts.contains(&"Hang") || f.scripts.contains(&"Kore")) {
+            eprintln!("SKIPPED: built without Korean craft-fonts (set CRAFT_FONTS_DIR to run)");
+            return;
+        }
+        let text = "한글";
+        let sans = resolve("Inter", "Regular").face;
+        for c in text.chars() {
+            let f = face(fallback_for(c, sans));
+            assert_eq!(f.info.origin, CRAFT_ORIGIN, "{c}");
+            assert!(f.has_char(c), "{c}: {}", f.info.family);
+        }
+        let l = crate::layout(text, &crate::TextStyle { size: 40.0, ..Default::default() }, &Default::default());
+        assert_eq!(l.glyphs.len(), text.chars().count());
+        assert!(l.glyphs.iter().all(|g| g.id != 0 && face(g.face).info.origin == CRAFT_ORIGIN), "{:?}", l.glyphs);
     }
 
     #[test]

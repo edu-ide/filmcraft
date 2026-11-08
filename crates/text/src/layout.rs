@@ -805,18 +805,20 @@ fn cache() -> &'static Mutex<HashMap<u64, (u64, Arc<Layout>)>> {
     C.get_or_init(Default::default)
 }
 
-/// Lay out `text` (cached by text and styles).
+/// Lay out `text` (cached by text, styles and font database revision).
 pub fn layout(text: &str, style: &TextStyle, para: &ParagraphStyle) -> Arc<Layout> {
     layout_rich(text, style, &[], para)
 }
 
-/// Lay out `text` with per-character style runs (cached by text, styles and runs).
+/// Lay out `text` with per-character style runs (cached by text, styles, runs and font database
+/// revision).
 pub fn layout_rich(text: &str, style: &TextStyle, runs: &[StyleRun], para: &ParagraphStyle) -> Arc<Layout> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
     style.hash(&mut h);
     para.hash(&mut h);
     runs.hash(&mut h);
+    fonts::revision().hash(&mut h);
     let key = h.finish();
     static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let now = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -849,6 +851,46 @@ mod tests {
 
     fn st(size: f32) -> TextStyle {
         TextStyle { size, ..Default::default() }
+    }
+
+    #[test]
+    fn registering_a_font_refreshes_cached_rich_layout() {
+        const FAMILY: &str = "FilmCraft late-registered layout test";
+        struct Source;
+        impl fonts::FontSource for Source {
+            fn faces(&self) -> Vec<fonts::FaceInfo> {
+                vec![fonts::FaceInfo {
+                    family: FAMILY.into(),
+                    style: "Regular".into(),
+                    weight: 400,
+                    italic: false,
+                    index: 0,
+                    data: fonts::FaceData::Static(fonts::JETBRAINS_MONO_REGULAR),
+                    origin: "test",
+                }]
+            }
+        }
+
+        let text = "WiWi";
+        let style = st(40.0);
+        let runs = [StyleRun { range: 0..text.len(), style: TextStyle { family: FAMILY.into(), ..style.clone() } }];
+        let para = ParagraphStyle::default();
+        // Complete the lazy system scan before caching, so only this registration changes the
+        // font database between the two layouts.
+        assert!(fonts::resolve(FAMILY, "Regular").missing);
+        let before = layout_rich(text, &style, &runs, &para);
+        assert!(before.missing_font);
+
+        assert_eq!(fonts::add_source(&Source), 1);
+        let registered = fonts::resolve(FAMILY, "Regular").face;
+        let fresh = layout_rich_uncached(text, &style, &runs, &para);
+        assert!(fresh.glyphs.iter().all(|g| g.face == registered));
+        assert!((fresh.lines[0].width - before.lines[0].width).abs() > 1.0, "the real font changes shaping");
+
+        let after = layout_rich(text, &style, &runs, &para);
+        assert!(!after.missing_font, "registering a font must invalidate a cached missing-family result");
+        assert_eq!(after.glyphs, fresh.glyphs);
+        assert_eq!(after.lines[0].width, fresh.lines[0].width);
     }
 
     #[test]
